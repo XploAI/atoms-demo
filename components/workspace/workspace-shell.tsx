@@ -3,18 +3,11 @@
 import * as React from "react";
 import type { Project, Message } from "@/lib/db/schema";
 import { useAnthropicKey } from "@/lib/anthropic/byok";
+import { useChatStream } from "@/lib/chat/use-chat-stream";
 import { Topbar } from "./topbar";
-import { ChatPanel, type ChatMessage } from "./chat-panel";
+import { ChatPanel } from "./chat-panel";
 import { PreviewPanel } from "./preview-panel";
 import { ApiKeyDialog } from "./api-key-dialog";
-
-function toChatMessages(rows: Message[]): ChatMessage[] {
-  return rows.map((m) => ({
-    id: m.id,
-    role: m.role as ChatMessage["role"],
-    content: m.content,
-  }));
-}
 
 export function WorkspaceShell({
   project,
@@ -23,23 +16,38 @@ export function WorkspaceShell({
   project: Project;
   messages: Message[];
 }) {
-  const [messages] = React.useState<ChatMessage[]>(toChatMessages(initialMessages));
-  const [files] = React.useState<Record<string, string>>(project.files ?? {});
-  const [pending] = React.useState(false);
   const [keyDialogOpen, setKeyDialogOpen] = React.useState(false);
   const { key, hydrated } = useAnthropicKey();
+  const autoFiredRef = React.useRef(false);
 
-  // Open the BYOK dialog automatically the first time the user arrives without
-  // a key in localStorage.
+  const { messages, files, pending, send } = useChatStream({
+    projectId: project.id,
+    initialMessages,
+    initialFiles: project.files ?? {},
+    model: project.model,
+  });
+
+  // First arrival: open BYOK dialog if no key.
   React.useEffect(() => {
     if (hydrated && !key) setKeyDialogOpen(true);
   }, [hydrated, key]);
+
+  // Auto-fire the initial prompt if the project was created with one and
+  // no agent turn has run yet.
+  React.useEffect(() => {
+    if (autoFiredRef.current) return;
+    if (!project.prompt) return;
+    if (initialMessages.length > 0) return;
+    if (!key) return;
+    autoFiredRef.current = true;
+    void send(project.prompt);
+  }, [key, project.prompt, initialMessages.length, send]);
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
       <Topbar
         project={project}
-        status={key ? "ready" : "needs API key"}
+        status={pending ? "generating…" : key ? project.status : "needs API key"}
         onOpenSettings={() => setKeyDialogOpen(true)}
         onShare={() => {
           /* iter 12 — share */
@@ -52,21 +60,16 @@ export function WorkspaceShell({
             messages={messages}
             pending={pending}
             disabled={!key}
-            onSend={() => {
-              /* iter 7 — wire to /api/chat */
-            }}
+            onSend={send}
             emptyHint={
               key ? (
-                <span>
-                  Streaming chat lands in the next iteration.
-                  <br />
-                  Initial prompt:{" "}
-                  <span className="text-zinc-400">{project.prompt ?? "—"}</span>
-                </span>
+                project.prompt ? (
+                  <span>Starting from your prompt:<br /><span className="text-zinc-400">{project.prompt}</span></span>
+                ) : (
+                  <span>Type a prompt to start.</span>
+                )
               ) : (
-                <span>
-                  Add your Anthropic API key to start chatting.
-                </span>
+                <span>Add your Anthropic API key from the settings cog ↑</span>
               )
             }
           />
