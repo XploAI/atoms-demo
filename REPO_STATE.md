@@ -63,8 +63,9 @@ _(none in progress)_
 
 ## Deploy
 
-- Production URL: _(to be set after first `vercel link` + deploy)_
+- Production URL: https://atoms-demo-seven.vercel.app
 - GitHub: https://github.com/XploAI/atoms-demo
+- Vercel project: `hblues-projects/atoms-demo`
 
 ## Notes / blockers
 
