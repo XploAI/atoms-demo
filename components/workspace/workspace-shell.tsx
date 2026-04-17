@@ -8,6 +8,9 @@ import { Topbar } from "./topbar";
 import { ChatPanel } from "./chat-panel";
 import { PreviewPanel } from "./preview-panel";
 import { ApiKeyDialog } from "./api-key-dialog";
+import { ShareDialog } from "./share-dialog";
+import { AgentTimeline } from "./agent-timeline";
+import { ModelPicker } from "./model-picker";
 
 export function WorkspaceShell({
   project,
@@ -17,15 +20,29 @@ export function WorkspaceShell({
   messages: Message[];
 }) {
   const [keyDialogOpen, setKeyDialogOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const { key, hydrated } = useAnthropicKey();
   const autoFiredRef = React.useRef(false);
 
-  const { messages, files, pending, send } = useChatStream({
+  const { messages, files, pending, send, model, setModel } = useChatStream({
     projectId: project.id,
     initialMessages,
     initialFiles: project.files ?? {},
     model: project.model,
   });
+
+  // Persist model selection
+  const onModelChange = React.useCallback(
+    (m: string) => {
+      setModel(m);
+      void fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: m }),
+      });
+    },
+    [project.id, setModel]
+  );
 
   // First arrival: open BYOK dialog if no key.
   React.useEffect(() => {
@@ -49,9 +66,13 @@ export function WorkspaceShell({
         project={project}
         status={pending ? "generating…" : key ? project.status : "needs API key"}
         onOpenSettings={() => setKeyDialogOpen(true)}
-        onShare={() => {
-          /* iter 12 — share */
-        }}
+        onShare={() => setShareOpen(true)}
+        rightSlot={
+          <div className="flex items-center gap-2">
+            <AgentTimeline messages={messages} pending={pending} />
+            <ModelPicker value={model} onChange={onModelChange} disabled={pending} />
+          </div>
+        }
       />
 
       <div className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[minmax(320px,40%)_1fr]">
@@ -64,7 +85,11 @@ export function WorkspaceShell({
             emptyHint={
               key ? (
                 project.prompt ? (
-                  <span>Starting from your prompt:<br /><span className="text-zinc-400">{project.prompt}</span></span>
+                  <span>
+                    Starting from your prompt:
+                    <br />
+                    <span className="text-zinc-400">{project.prompt}</span>
+                  </span>
                 ) : (
                   <span>Type a prompt to start.</span>
                 )
@@ -81,6 +106,12 @@ export function WorkspaceShell({
       </div>
 
       <ApiKeyDialog open={keyDialogOpen} onOpenChange={setKeyDialogOpen} />
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        projectId={project.id}
+        hasFiles={Object.keys(files).length > 0}
+      />
     </div>
   );
 }
