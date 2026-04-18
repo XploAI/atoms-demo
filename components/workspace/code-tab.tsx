@@ -5,7 +5,13 @@ import { File } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
-export function CodeTab({ files }: { files: Record<string, string> }) {
+export function CodeTab({
+  files,
+  streamingPath,
+}: {
+  files: Record<string, string>;
+  streamingPath?: string | null;
+}) {
   const fileNames = Object.keys(files).sort();
   const [active, setActive] = React.useState<string | null>(fileNames[0] ?? null);
 
@@ -13,6 +19,11 @@ export function CodeTab({ files }: { files: Record<string, string> }) {
     if (!active && fileNames.length) setActive(fileNames[0]);
     if (active && !files[active] && fileNames.length) setActive(fileNames[0]);
   }, [files, fileNames, active]);
+
+  // When a new file starts streaming, jump to it so users see it being written.
+  React.useEffect(() => {
+    if (streamingPath && files[streamingPath] !== undefined) setActive(streamingPath);
+  }, [streamingPath, files]);
 
   if (fileNames.length === 0) {
     return (

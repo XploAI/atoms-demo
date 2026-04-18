@@ -38,7 +38,15 @@ export function useChatStream({
   model: string;
 }) {
   const [messages, setMessages] = React.useState<ChatMessage[]>(() => rowsToChat(initialMessages));
+  // Two file maps:
+  //   files       — committed snapshot fed to Sandpack. Only updated on
+  //                 file_end or the final `persisted` event, so the preview
+  //                 never tries to compile half-written code.
+  //   draftFiles  — includes in-flight content for the Code tab so users
+  //                 still get the satisfying "watching it type" effect.
   const [files, setFiles] = React.useState<Record<string, string>>(initialFiles);
+  const [draftFiles, setDraftFiles] = React.useState<Record<string, string>>(initialFiles);
+  const [streamingPath, setStreamingPath] = React.useState<string | null>(null);
   const [pending, setPending] = React.useState(false);
   const [model, setModel] = React.useState(initialModel);
   const abortRef = React.useRef<AbortController | null>(null);
@@ -60,7 +68,8 @@ export function useChatStream({
 
       // We'll mutate these per-event:
       const liveAgentIds: Partial<Record<AgentRole, string>> = {};
-      const liveFiles: Record<string, string> = { ...files };
+      const committedFiles: Record<string, string> = { ...files }; // → Sandpack preview
+      const liveDraftFiles: Record<string, string> = { ...files }; // → Code tab
       let liveFilePath: string | null = null;
 
       const ac = new AbortController();
@@ -147,22 +156,31 @@ export function useChatStream({
           }
           case "file_start": {
             liveFilePath = ev.path;
-            liveFiles[ev.path] = "";
-            setFiles({ ...liveFiles });
+            liveDraftFiles[ev.path] = "";
+            setDraftFiles({ ...liveDraftFiles });
+            setStreamingPath(ev.path);
             break;
           }
           case "file_delta": {
             if (!liveFilePath) return;
-            liveFiles[liveFilePath] = (liveFiles[liveFilePath] ?? "") + ev.text;
-            setFiles({ ...liveFiles });
+            liveDraftFiles[liveFilePath] = (liveDraftFiles[liveFilePath] ?? "") + ev.text;
+            setDraftFiles({ ...liveDraftFiles });
             break;
           }
           case "file_end": {
+            // Commit the just-completed file to the preview now that we know
+            // it's syntactically whole. Sandpack re-renders once, cleanly.
+            if (liveFilePath) {
+              committedFiles[liveFilePath] = liveDraftFiles[liveFilePath] ?? "";
+              setFiles({ ...committedFiles });
+            }
             liveFilePath = null;
+            setStreamingPath(null);
             break;
           }
           case "persisted": {
             setFiles({ ...ev.files });
+            setDraftFiles({ ...ev.files });
             break;
           }
           case "error": {
@@ -183,5 +201,15 @@ export function useChatStream({
     abortRef.current?.abort();
   }, []);
 
-  return { messages, files, pending, send, cancel, model, setModel };
+  return {
+    messages,
+    files,
+    draftFiles,
+    streamingPath,
+    pending,
+    send,
+    cancel,
+    model,
+    setModel,
+  };
 }

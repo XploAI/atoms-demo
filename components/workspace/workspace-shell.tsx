@@ -24,12 +24,13 @@ export function WorkspaceShell({
   const { key, hydrated } = useAnthropicKey();
   const autoFiredRef = React.useRef(false);
 
-  const { messages, files, pending, send, model, setModel } = useChatStream({
-    projectId: project.id,
-    initialMessages,
-    initialFiles: project.files ?? {},
-    model: project.model,
-  });
+  const { messages, files, draftFiles, streamingPath, pending, send, model, setModel } =
+    useChatStream({
+      projectId: project.id,
+      initialMessages,
+      initialFiles: project.files ?? {},
+      model: project.model,
+    });
 
   // Persist model selection
   const onModelChange = React.useCallback(
@@ -75,7 +76,7 @@ export function WorkspaceShell({
         }
       />
 
-      <div className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[minmax(320px,40%)_1fr]">
+      <div className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[minmax(320px,420px)_1fr]">
         <aside className="flex min-h-0 flex-col border-r border-zinc-900 bg-zinc-950/40">
           <ChatPanel
             messages={messages}
@@ -101,7 +102,12 @@ export function WorkspaceShell({
         </aside>
 
         <main className="min-h-0">
-          <PreviewPanel files={files} />
+          <PreviewPanel
+            files={files}
+            draftFiles={draftFiles}
+            streamingPath={streamingPath}
+            pending={pending}
+          />
         </main>
       </div>
 
