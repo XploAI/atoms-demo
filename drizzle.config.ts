@@ -1,5 +1,9 @@
-import "dotenv/config";
+import { config } from "dotenv";
 import type { Config } from "drizzle-kit";
+
+// Load .env.local first (Vercel pull), then fall back to .env
+config({ path: ".env.local" });
+config();
 
 export default {
   schema: "./lib/db/schema.ts",
