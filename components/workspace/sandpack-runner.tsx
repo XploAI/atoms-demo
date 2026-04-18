@@ -25,8 +25,22 @@ const PLACEHOLDER_FILES: Record<string, string> = {
       padding: 24,
       textAlign: 'center'
     }}>
-      <div>
-        <div style={{ fontSize: 40, marginBottom: 12 }}>⚛️</div>
+      <div style={{ maxWidth: 280 }}>
+        <svg
+          viewBox="0 0 48 48"
+          width="48"
+          height="48"
+          fill="none"
+          stroke="#a78bfa"
+          strokeWidth={1.4}
+          strokeLinecap="round"
+          style={{ margin: '0 auto 14px', display: 'block' }}
+        >
+          <ellipse cx="24" cy="24" rx="20" ry="7.5" />
+          <ellipse cx="24" cy="24" rx="20" ry="7.5" transform="rotate(60 24 24)" />
+          <ellipse cx="24" cy="24" rx="20" ry="7.5" transform="rotate(-60 24 24)" />
+          <circle cx="24" cy="24" r="2.2" fill="#a78bfa" stroke="none" />
+        </svg>
         <div style={{ color: '#e4e4e7', fontWeight: 600, marginBottom: 6 }}>
           Sandbox ready
         </div>
