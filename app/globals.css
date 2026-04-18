@@ -84,3 +84,28 @@
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* Force Sandpack to fill its container. Sandpack ships with hard-coded min/max
+   heights on its wrapper/layout/stack classes; we override them here so the
+   preview iframe grows to whatever pane height we give it. */
+.sandpack-full,
+.sandpack-full > div {
+  height: 100%;
+  width: 100%;
+}
+.sandpack-full .sp-wrapper,
+.sandpack-full .sp-layout,
+.sandpack-full .sp-stack,
+.sandpack-full .sp-preview-container,
+.sandpack-full .sp-preview,
+.sandpack-full .sp-preview-iframe {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+}
+.sandpack-full .sp-layout {
+  display: flex;
+  flex-direction: column;
+}

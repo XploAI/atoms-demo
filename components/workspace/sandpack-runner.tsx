@@ -78,7 +78,7 @@ export function SandpackRunner({ files, className }: SandpackRunnerProps) {
   }, [files]);
 
   return (
-    <div className={className}>
+    <div className={`sandpack-full ${className ?? ""}`}>
       <SandpackProvider
         template="react-ts"
         theme="dark"
@@ -90,12 +90,11 @@ export function SandpackRunner({ files, className }: SandpackRunnerProps) {
           activeFile: "/App.tsx",
         }}
       >
-        <SandpackLayout style={{ height: "100%", border: "none", borderRadius: 0 }}>
+        <SandpackLayout>
           <SandpackPreview
             showOpenInCodeSandbox={false}
             showRefreshButton
             showSandpackErrorOverlay
-            style={{ height: "100%", flex: 1 }}
           />
         </SandpackLayout>
       </SandpackProvider>
