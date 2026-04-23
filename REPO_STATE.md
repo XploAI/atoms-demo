@@ -23,6 +23,7 @@ runnable web app → live preview → save / share / iterate. See the
 - [x] **Iter 13–14** — Agent timeline pill in topbar (plan › build › verify, lights up during streaming); ModelPicker (Sonnet 4.6 / Haiku 4.5 / Opus 4.7) persisted per-project.
 - [x] **Iter 15 partial** — Parser smoke test; workspace `loading.tsx` shimmer; polish pass.
 - [x] **Iter 16** — Deployed to Vercel, Neon DB provisioned, migrations applied; smoke tested POST/GET/workspace on the live URL.
+- [x] **Iter 17** — Multi-provider: DeepSeek V3 as the free default (server key, 3 generations/IP lifetime via atomic upsert in `ip_usage`), Anthropic BYOK unchanged as the unlimited upgrade path. `/api/chat` now picks the provider by BYOK-header presence; `/api/usage` surfaces the current quota; ModelPicker gates Claude rows with a lock icon; QuotaBadge pill in the topbar.
 
 ## Current iteration
 
@@ -39,7 +40,7 @@ _(none — demo is live)_
 
 ## Deploy
 
-- Production URL: **https://atoms-demo-seven.vercel.app**
+- Production URL: **https://atoms-demo-henry.vercel.app**
 - GitHub: https://github.com/XploAI/atoms-demo
 - Vercel project: `hblues-projects/atoms-demo`
 - Neon DB: connected via Vercel Marketplace (auto-injects `DATABASE_URL`)

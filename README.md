@@ -4,7 +4,7 @@ An open-source homage to [atoms.dev](https://atoms.dev) — describe an app in
 plain English, watch a multi-agent team plan it, write it, and run it live in
 your browser.
 
-**Live demo:** https://atoms-demo-seven.vercel.app
+**Live demo:** https://atoms-demo-henry.vercel.app
 **Source:** https://github.com/XploAI/atoms-demo
 
 Powered by **Claude** (BYOK), **Next.js 16**, **Sandpack**, and **Neon Postgres**.
@@ -20,6 +20,14 @@ Powered by **Claude** (BYOK), **Next.js 16**, **Sandpack**, and **Neon Postgres*
 4. Save / list / re-open your projects (anonymous, scoped to your browser cookie).
 5. Share a generated app via a public read-only link — anyone with the URL can
    run it, no account or API key required.
+
+## Two tiers
+
+- **Free tier** (default): the server runs **DeepSeek V3** with its own key —
+  capped at **3 generations per IP** (lifetime). Enough to kick the tires.
+- **BYOK Anthropic**: paste your own Anthropic key (kept in `localStorage`,
+  never persisted on the server) to unlock **Claude Sonnet 4.6 / Haiku 4.5 /
+  Opus 4.7** with no IP limit.
 
 ### Try it in ~60 seconds
 
