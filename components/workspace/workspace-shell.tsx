@@ -3,7 +3,8 @@
 import * as React from "react";
 import type { Project, Message } from "@/lib/db/schema";
 import { useAnthropicKey } from "@/lib/anthropic/byok";
-import { useChatStream } from "@/lib/chat/use-chat-stream";
+import { useChatStream, type Quota } from "@/lib/chat/use-chat-stream";
+import { DEFAULT_MODEL_BYOK, DEFAULT_MODEL_FREE, MODELS, type ModelId } from "@/lib/llm/models";
 import { Topbar } from "./topbar";
 import { ChatPanel } from "./chat-panel";
 import { PreviewPanel } from "./preview-panel";
@@ -11,6 +12,7 @@ import { ApiKeyDialog } from "./api-key-dialog";
 import { ShareDialog } from "./share-dialog";
 import { AgentTimeline } from "./agent-timeline";
 import { ModelPicker } from "./model-picker";
+import { QuotaBadge } from "./quota-badge";
 
 export function WorkspaceShell({
   project,
@@ -24,17 +26,30 @@ export function WorkspaceShell({
   const { key, hydrated } = useAnthropicKey();
   const autoFiredRef = React.useRef(false);
 
-  const { messages, files, draftFiles, streamingPath, pending, send, model, setModel } =
+  const { messages, files, draftFiles, streamingPath, pending, send, model, setModel, quota } =
     useChatStream({
       projectId: project.id,
       initialMessages,
       initialFiles: project.files ?? {},
       model: project.model,
+      onRateLimited: () => setKeyDialogOpen(true),
     });
 
-  // Persist model selection
+  // When the user adds/removes a BYOK key, default the selected model
+  // sensibly (Sonnet with a key, DeepSeek without).
+  React.useEffect(() => {
+    const info = MODELS[model as ModelId];
+    if (!info) {
+      setModel(key ? DEFAULT_MODEL_BYOK : DEFAULT_MODEL_FREE);
+      return;
+    }
+    if (!info.freeTier && !key) {
+      setModel(DEFAULT_MODEL_FREE);
+    }
+  }, [key, model, setModel]);
+
   const onModelChange = React.useCallback(
-    (m: string) => {
+    (m: ModelId) => {
       setModel(m);
       void fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
@@ -45,33 +60,56 @@ export function WorkspaceShell({
     [project.id, setModel]
   );
 
-  // First arrival: open BYOK dialog if no key.
-  React.useEffect(() => {
-    if (hydrated && !key) setKeyDialogOpen(true);
-  }, [hydrated, key]);
+  // Auto-fire the initial prompt on first arrival, as long as we can use
+  // *some* provider — either BYOK or free tier with remaining quota.
+  const canGenerate = Boolean(key) || (quota ? quota.remaining > 0 : true);
 
-  // Auto-fire the initial prompt if the project was created with one and
-  // no agent turn has run yet.
   React.useEffect(() => {
     if (autoFiredRef.current) return;
     if (!project.prompt) return;
     if (initialMessages.length > 0) return;
-    if (!key) return;
+    if (!hydrated) return;
+    if (!canGenerate) return;
     autoFiredRef.current = true;
     void send(project.prompt);
-  }, [key, project.prompt, initialMessages.length, send]);
+  }, [hydrated, canGenerate, project.prompt, initialMessages.length, send]);
+
+  // Open the key dialog once, when a free-tier visitor has used up their runs.
+  React.useEffect(() => {
+    if (!hydrated) return;
+    if (key) return;
+    if (quota && quota.remaining === 0) setKeyDialogOpen(true);
+  }, [hydrated, key, quota]);
+
+  const chatDisabled = !canGenerate && !pending;
+  const statusLabel = pending
+    ? "generating…"
+    : key
+      ? project.status
+      : quota
+        ? quota.remaining > 0
+          ? `free tier · ${quota.remaining}/${quota.limit} left`
+          : "free tier exhausted"
+        : project.status;
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
       <Topbar
         project={project}
-        status={pending ? "generating…" : key ? project.status : "needs API key"}
+        status={statusLabel}
         onOpenSettings={() => setKeyDialogOpen(true)}
         onShare={() => setShareOpen(true)}
         rightSlot={
           <div className="flex items-center gap-2">
             <AgentTimeline messages={messages} pending={pending} />
-            <ModelPicker value={model} onChange={onModelChange} disabled={pending} />
+            {!key && quota && <QuotaBadge quota={quota} />}
+            <ModelPicker
+              value={model}
+              onChange={onModelChange}
+              disabled={pending}
+              hasByok={Boolean(key)}
+              onLockedClick={() => setKeyDialogOpen(true)}
+            />
           </div>
         }
       />
@@ -81,10 +119,10 @@ export function WorkspaceShell({
           <ChatPanel
             messages={messages}
             pending={pending}
-            disabled={!key}
+            disabled={chatDisabled}
             onSend={send}
             emptyHint={
-              key ? (
+              canGenerate ? (
                 project.prompt ? (
                   <span>
                     Starting from your prompt:
@@ -95,7 +133,10 @@ export function WorkspaceShell({
                   <span>Type a prompt to start.</span>
                 )
               ) : (
-                <span>Add your Anthropic API key from the settings cog ↑</span>
+                <span>
+                  Free tier used up. Add your own Anthropic key from the
+                  settings cog ↑ to keep going.
+                </span>
               )
             }
           />
@@ -111,7 +152,11 @@ export function WorkspaceShell({
         </main>
       </div>
 
-      <ApiKeyDialog open={keyDialogOpen} onOpenChange={setKeyDialogOpen} />
+      <ApiKeyDialog
+        open={keyDialogOpen}
+        onOpenChange={setKeyDialogOpen}
+        quota={quota ?? undefined}
+      />
       <ShareDialog
         open={shareOpen}
         onOpenChange={setShareOpen}
@@ -121,3 +166,6 @@ export function WorkspaceShell({
     </div>
   );
 }
+
+// re-export for type consumers (e.g. ApiKeyDialog)
+export type { Quota };

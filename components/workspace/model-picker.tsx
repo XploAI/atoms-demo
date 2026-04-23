@@ -1,37 +1,35 @@
 "use client";
 
 import * as React from "react";
-import { Check, ChevronDown, Cpu } from "lucide-react";
+import { Check, ChevronDown, Cpu, Lock } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { MODELS, type ModelId } from "@/lib/llm/models";
 import { cn } from "@/lib/utils";
-
-type ModelOption = {
-  id: string;
-  name: string;
-  hint: string;
-};
-
-const MODELS: ModelOption[] = [
-  { id: "claude-sonnet-4-6", name: "Sonnet 4.6", hint: "Balanced — recommended" },
-  { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", hint: "Fast & cheap" },
-  { id: "claude-opus-4-7", name: "Opus 4.7", hint: "Most capable, slower" },
-];
 
 export function ModelPicker({
   value,
   onChange,
   disabled,
+  hasByok,
+  onLockedClick,
 }: {
   value: string;
-  onChange: (model: string) => void;
+  onChange: (model: ModelId) => void;
   disabled?: boolean;
+  hasByok: boolean;
+  /** Fired when the user clicks a locked (BYOK-only) model without a key. */
+  onLockedClick?: () => void;
 }) {
-  const current = MODELS.find((m) => m.id === value) ?? MODELS[0];
+  const current = MODELS[value as ModelId] ?? MODELS["deepseek-chat"];
+  const ordered = Object.values(MODELS);
+  const freeModels = ordered.filter((m) => m.freeTier);
+  const byokModels = ordered.filter((m) => !m.freeTier);
 
   return (
     <DropdownMenu>
@@ -44,30 +42,69 @@ export function ModelPicker({
           )}
         >
           <Cpu className="h-3 w-3" />
-          {current.name}
+          {current.label}
           <ChevronDown className="h-3 w-3 text-zinc-500" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[14rem]">
-        {MODELS.map((m) => (
-          <DropdownMenuItem
+      <DropdownMenuContent align="end" className="min-w-[16rem]">
+        {freeModels.map((m) => (
+          <ModelRow
             key={m.id}
+            model={m}
+            active={m.id === value}
             onSelect={() => onChange(m.id)}
-            className="flex items-center gap-3"
-          >
-            <Check
-              className={cn(
-                "h-3.5 w-3.5",
-                m.id === value ? "text-purple-300" : "opacity-0"
-              )}
-            />
-            <div className="flex-1">
-              <div className="text-sm">{m.name}</div>
-              <div className="text-[11px] text-zinc-500">{m.hint}</div>
-            </div>
-          </DropdownMenuItem>
+          />
         ))}
+        <DropdownMenuSeparator />
+        <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-zinc-600">
+          Claude · bring your own key
+        </div>
+        {byokModels.map((m) => {
+          const locked = !hasByok;
+          return (
+            <ModelRow
+              key={m.id}
+              model={m}
+              active={m.id === value}
+              locked={locked}
+              onSelect={() => (locked ? onLockedClick?.() : onChange(m.id))}
+            />
+          );
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function ModelRow({
+  model,
+  active,
+  locked,
+  onSelect,
+}: {
+  model: (typeof MODELS)[ModelId];
+  active: boolean;
+  locked?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <DropdownMenuItem
+      onSelect={(e) => {
+        e.preventDefault();
+        onSelect();
+      }}
+      className={cn("flex items-center gap-3", locked && "opacity-60")}
+    >
+      <Check
+        className={cn("h-3.5 w-3.5", active ? "text-purple-300" : "opacity-0")}
+      />
+      <div className="flex-1">
+        <div className="flex items-center gap-1.5 text-sm">
+          {model.label}
+          {locked && <Lock className="h-3 w-3 text-zinc-500" />}
+        </div>
+        <div className="text-[11px] text-zinc-500">{model.hint}</div>
+      </div>
+    </DropdownMenuItem>
   );
 }

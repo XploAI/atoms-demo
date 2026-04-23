@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { CheckCircle2, ExternalLink, KeyRound, Loader2, ShieldAlert, Trash2 } from "lucide-react";
+import { CheckCircle2, ExternalLink, KeyRound, Loader2, ShieldAlert, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -25,10 +25,13 @@ export function ApiKeyDialog({
   open,
   onOpenChange,
   onSaved,
+  quota,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved?: () => void;
+  /** Current free-tier quota so we can tell the user what they lose/gain. */
+  quota?: { used: number; remaining: number; limit: number };
 }) {
   const { key: stored, save, clear } = useAnthropicKey();
   const [draft, setDraft] = React.useState("");
@@ -85,9 +88,9 @@ export function ApiKeyDialog({
             <KeyRound className="h-4 w-4 text-purple-300" /> Anthropic API key
           </DialogTitle>
           <DialogDescription>
-            This demo runs Claude with <strong>your</strong> key — it lives in your
-            browser&apos;s localStorage and is sent per-request, never persisted on
-            our server.{" "}
+            Optional — adding your Anthropic key unlocks Claude (Sonnet 4.6 /
+            Haiku 4.5 / Opus 4.7) with no IP limit. It lives in your browser&apos;s
+            localStorage and is sent per-request; our server never stores it.{" "}
             <a
               href="https://console.anthropic.com/settings/keys"
               target="_blank"
@@ -98,6 +101,19 @@ export function ApiKeyDialog({
             </a>
           </DialogDescription>
         </DialogHeader>
+
+        <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-100">
+          <div className="flex items-center gap-1.5 font-medium">
+            <Sparkles className="h-3.5 w-3.5" /> Or use the free tier
+          </div>
+          <div className="mt-0.5 text-emerald-200/80">
+            {quota
+              ? quota.remaining > 0
+                ? `You have ${quota.remaining} of ${quota.limit} free DeepSeek V3 generations left on this IP.`
+                : `Free tier used (${quota.used}/${quota.limit}). Add your own key below to keep generating.`
+              : "DeepSeek V3 runs on our server key, capped at 3 generations per IP."}
+          </div>
+        </div>
 
         {stored && (
           <div className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs">

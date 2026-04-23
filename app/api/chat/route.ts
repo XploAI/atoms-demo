@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import Anthropic from "@anthropic-ai/sdk";
 import { getDb } from "@/lib/db/client";
 import { messages as messagesTable, projects } from "@/lib/db/schema";
 import { readAnonId } from "@/lib/session/anon";
@@ -12,10 +11,13 @@ import {
 } from "@/lib/anthropic/protocol";
 import { SYSTEM_PROMPT, currentStatePrompt } from "@/lib/anthropic/system-prompt";
 import type { Message } from "@/lib/db/schema";
+import { streamCompletion, type ChatTurn } from "@/lib/llm/stream";
+import { modelInfoOrDefault } from "@/lib/llm/models";
+import { bumpUsage, getClientIp, getQuota } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // up to 5 min for slow generations
+export const maxDuration = 300;
 
 const bodySchema = z.object({
   projectId: z.string().uuid(),
@@ -23,29 +25,17 @@ const bodySchema = z.object({
   model: z.string().optional(),
 });
 
-const ALLOWED_MODELS = new Set([
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "claude-opus-4-7",
-]);
-
 /**
- * Streams an agent turn:
- * - Validates ownership via the anon cookie
- * - Persists the user message immediately
- * - Builds Anthropic message history (prior user prompts + summarized assistant
- *   responses + new prompt with current file state)
- * - Pipes Anthropic's stream through ProtocolParser → SSE events to the client
- * - On stream end, persists per-agent rows + merged file map + project status
+ * Streams an agent turn.
  *
- * BYOK: the key arrives in the `x-anthropic-key` header, is used once, and
- * never logged or persisted.
+ * Provider selection:
+ * - If `x-anthropic-key` header present → Anthropic with BYOK, no rate limit.
+ * - Else → server DeepSeek key, rate-limited at FREE_TIER_LIMIT per IP.
+ *
+ * On stream end: persists per-agent rows + merged file map + project status.
  */
 export async function POST(req: NextRequest) {
-  const apiKey = req.headers.get("x-anthropic-key");
-  if (!apiKey) {
-    return NextResponse.json({ error: "Missing x-anthropic-key header" }, { status: 401 });
-  }
+  const byokKey = req.headers.get("x-anthropic-key") || null;
 
   const userId = await readAnonId();
   if (!userId) {
@@ -58,7 +48,47 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  const { projectId, message, model } = parsedBody;
+  const { projectId, message, model: requestedModel } = parsedBody;
+
+  const modelInfo = modelInfoOrDefault(requestedModel, Boolean(byokKey));
+
+  // Resolve API key + enforce quota for free-tier (DeepSeek) requests.
+  let apiKey: string;
+  let quotaAfter: { used: number; remaining: number; limit: number } | null = null;
+  if (modelInfo.provider === "anthropic") {
+    if (!byokKey) {
+      return NextResponse.json(
+        { error: "anthropic_key_required", message: "Add your Anthropic key to use Claude." },
+        { status: 401 }
+      );
+    }
+    apiKey = byokKey;
+  } else {
+    const serverKey = process.env.DEEPSEEK_API_KEY;
+    if (!serverKey) {
+      return NextResponse.json(
+        { error: "server_misconfigured", message: "DEEPSEEK_API_KEY is not set on the server." },
+        { status: 500 }
+      );
+    }
+    const ip = getClientIp(req);
+    const pre = await getQuota(ip);
+    if (!pre.allowed) {
+      return NextResponse.json(
+        {
+          error: "rate_limited",
+          message: `Free tier limit reached (${pre.limit} generations per IP). Add an Anthropic key to keep going.`,
+          quota: pre,
+        },
+        { status: 429 }
+      );
+    }
+    // Consume one allowance up-front. Simplest race-safe approach; if the
+    // generation fails mid-stream we don't refund (this is intentional — it
+    // also deters repeated-failure attacks).
+    quotaAfter = await bumpUsage(ip);
+    apiKey = serverKey;
+  }
 
   const db = getDb();
   const [project] = await db
@@ -70,16 +100,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const chosenModel = model && ALLOWED_MODELS.has(model) ? model : project.model;
-
   const prior = await db
     .select()
     .from(messagesTable)
     .where(eq(messagesTable.projectId, project.id))
     .orderBy(messagesTable.createdAt);
 
-  // Persist user message before streaming so that interrupted streams still
-  // record what the user asked.
   await db.insert(messagesTable).values({
     projectId: project.id,
     role: "user",
@@ -87,23 +113,30 @@ export async function POST(req: NextRequest) {
   });
   await db
     .update(projects)
-    .set({ status: "generating", model: chosenModel, updatedAt: new Date() })
+    .set({ status: "generating", model: modelInfo.id, updatedAt: new Date() })
     .where(eq(projects.id, project.id));
 
-  const anthropicMessages = buildHistory(prior, message, project.files);
+  const turns = buildHistory(prior, message, project.files);
 
-  const client = new Anthropic({ apiKey });
   const encoder = new TextEncoder();
-
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: StreamEvent | { type: "error"; message: string } | { type: "persisted"; files: Record<string, string> }) => {
+      const send = (event: unknown) => {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
         } catch {
-          /* controller may have been closed */
+          /* controller closed */
         }
       };
+
+      // Up-front, tell the client which provider / quota it's on so the UI
+      // can show the remaining count as soon as the request starts.
+      send({
+        type: "meta",
+        provider: modelInfo.provider,
+        model: modelInfo.id,
+        quota: quotaAfter,
+      });
 
       const parser = new ProtocolParser();
       const newFiles: Record<string, string> = {};
@@ -148,29 +181,20 @@ export async function POST(req: NextRequest) {
       };
 
       try {
-        const upstream = await client.messages.create({
-          model: chosenModel,
-          max_tokens: 8000,
+        for await (const delta of streamCompletion({
+          provider: modelInfo.provider,
+          apiKey,
+          model: modelInfo.id,
           system: SYSTEM_PROMPT,
-          messages: anthropicMessages,
-          stream: true,
-        });
-
-        for await (const chunk of upstream) {
-          if (
-            chunk.type === "content_block_delta" &&
-            chunk.delta.type === "text_delta"
-          ) {
-            handleEvents(parser.feed(chunk.delta.text));
-          }
+          messages: turns,
+        })) {
+          handleEvents(parser.feed(delta));
         }
         handleEvents(parser.end());
 
-        // Persist agent turns + merged files
         const mergedFiles = { ...project.files, ...newFiles };
 
         if (agentTurns.length === 0 && Object.keys(newFiles).length === 0) {
-          // Model returned nothing parseable
           await db
             .update(projects)
             .set({ status: "error", updatedAt: new Date() })
@@ -180,8 +204,7 @@ export async function POST(req: NextRequest) {
             message: "The agent returned no parseable output. Try again or rephrase.",
           });
         } else {
-          for (let i = 0; i < agentTurns.length; i++) {
-            const a = agentTurns[i];
+          for (const a of agentTurns) {
             await db.insert(messagesTable).values({
               projectId: project.id,
               role: a.role,
@@ -222,24 +245,17 @@ export async function POST(req: NextRequest) {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
-      "X-Accel-Buffering": "no", // disables nginx buffering, just in case
+      "X-Accel-Buffering": "no",
     },
   });
 }
 
-/**
- * Convert prior DB messages + new user prompt + current file state into the
- * alternating user/assistant array Anthropic expects.
- *
- * We collapse each turn's planner/engineer/qa rows into a single assistant
- * message in the same protocol form Claude was trained to emit.
- */
 function buildHistory(
   prior: Message[],
   newUserMessage: string,
   currentFiles: Record<string, string>
-): Anthropic.MessageParam[] {
-  const out: Anthropic.MessageParam[] = [];
+): ChatTurn[] {
+  const out: ChatTurn[] = [];
   let assistantBuffer: Message[] = [];
 
   const flushAssistant = () => {
@@ -258,7 +274,6 @@ function buildHistory(
     } else if (m.role === "planner" || m.role === "engineer" || m.role === "qa") {
       assistantBuffer.push(m);
     }
-    // 'system' rows are skipped from history
   }
   flushAssistant();
 
@@ -266,7 +281,5 @@ function buildHistory(
   const userContent = stateBlock ? `${stateBlock}\n\n${newUserMessage}` : newUserMessage;
   out.push({ role: "user", content: userContent });
 
-  // Anthropic requires the final message to be `user`. Conversation must
-  // alternate; if the last assistant turn collapsed weirdly, dedup.
   return out;
 }

@@ -7,9 +7,23 @@ import type { StreamEvent, AgentRole } from "@/lib/anthropic/protocol";
 import type { ChatMessage } from "@/components/workspace/chat-panel";
 import type { Message } from "@/lib/db/schema";
 
+export type Quota = {
+  used: number;
+  remaining: number;
+  limit: number;
+};
+
+export type MetaEvent = {
+  type: "meta";
+  provider: "anthropic" | "deepseek";
+  model: string;
+  quota: Quota | null;
+};
+
 type ServerEvent =
   | StreamEvent
-  | { type: "error"; message: string }
+  | MetaEvent
+  | { type: "error"; message: string; quota?: Quota }
   | { type: "persisted"; files: Record<string, string> };
 
 function rowsToChat(rows: Message[]): ChatMessage[] {
@@ -26,89 +40,111 @@ const ROLE_TO_KIND: Record<AgentRole, ChatMessage["role"]> = {
   qa: "qa",
 };
 
+type SendResult = "ok" | "rate_limited" | "error";
+
 export function useChatStream({
   projectId,
   initialMessages,
   initialFiles,
   model: initialModel,
+  onRateLimited,
 }: {
   projectId: string;
   initialMessages: Message[];
   initialFiles: Record<string, string>;
   model: string;
+  onRateLimited?: (quota: Quota) => void;
 }) {
   const [messages, setMessages] = React.useState<ChatMessage[]>(() => rowsToChat(initialMessages));
-  // Two file maps:
-  //   files       — committed snapshot fed to Sandpack. Only updated on
-  //                 file_end or the final `persisted` event, so the preview
-  //                 never tries to compile half-written code.
-  //   draftFiles  — includes in-flight content for the Code tab so users
-  //                 still get the satisfying "watching it type" effect.
   const [files, setFiles] = React.useState<Record<string, string>>(initialFiles);
   const [draftFiles, setDraftFiles] = React.useState<Record<string, string>>(initialFiles);
   const [streamingPath, setStreamingPath] = React.useState<string | null>(null);
   const [pending, setPending] = React.useState(false);
   const [model, setModel] = React.useState(initialModel);
+  const [quota, setQuota] = React.useState<Quota | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
 
-  const send = React.useCallback(
-    async (text: string) => {
-      const key = readStoredKey();
-      if (!key) {
-        toast.error("No API key set");
-        return;
-      }
-      if (pending) return;
+  // Prime the quota on mount so the UI can show "N free left" before the user
+  // sends anything.
+  React.useEffect(() => {
+    let alive = true;
+    fetch("/api/usage", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data?.quota) setQuota(data.quota);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
+  const send = React.useCallback(
+    async (text: string): Promise<SendResult> => {
+      if (pending) return "error";
       setPending(true);
 
-      // Add the user message optimistically
       const userId = `local-user-${Date.now()}`;
       setMessages((prev) => [...prev, { id: userId, role: "user", content: text }]);
 
-      // We'll mutate these per-event:
       const liveAgentIds: Partial<Record<AgentRole, string>> = {};
-      const committedFiles: Record<string, string> = { ...files }; // → Sandpack preview
-      const liveDraftFiles: Record<string, string> = { ...files }; // → Code tab
+      const committedFiles: Record<string, string> = { ...files };
+      const liveDraftFiles: Record<string, string> = { ...files };
       let liveFilePath: string | null = null;
 
       const ac = new AbortController();
       abortRef.current = ac;
 
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const byokKey = readStoredKey();
+      if (byokKey) headers["x-anthropic-key"] = byokKey;
+
+      let result: SendResult = "ok";
+
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-anthropic-key": key,
-          },
+          headers,
           body: JSON.stringify({ projectId, message: text, model }),
           signal: ac.signal,
         });
 
         if (!res.ok || !res.body) {
-          const errText = await res.text().catch(() => "");
-          throw new Error(errText || `HTTP ${res.status}`);
-        }
+          // Try to surface a structured error body (rate_limited / anthropic_key_required / …)
+          const errJson = await res.json().catch(() => null);
+          if (res.status === 429 && errJson?.quota) {
+            setQuota(errJson.quota);
+            onRateLimited?.(errJson.quota);
+            toast.error("Free tier exhausted", {
+              description:
+                errJson?.message ?? "Add your own Anthropic key to keep going.",
+            });
+            result = "rate_limited";
+          } else {
+            throw new Error(
+              errJson?.message || errJson?.error || (await res.text().catch(() => "")) || `HTTP ${res.status}`
+            );
+          }
+        } else {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n\n");
-          buf = lines.pop() ?? "";
-          for (const block of lines) {
-            const line = block.split("\n").find((l) => l.startsWith("data:"));
-            if (!line) continue;
-            try {
-              const ev = JSON.parse(line.slice(5).trim()) as ServerEvent;
-              applyEvent(ev);
-            } catch {
-              /* ignore malformed line */
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split("\n\n");
+            buf = lines.pop() ?? "";
+            for (const block of lines) {
+              const line = block.split("\n").find((l) => l.startsWith("data:"));
+              if (!line) continue;
+              try {
+                const ev = JSON.parse(line.slice(5).trim()) as ServerEvent;
+                applyEvent(ev);
+              } catch {
+                /* ignore malformed line */
+              }
             }
           }
         }
@@ -119,14 +155,21 @@ export function useChatStream({
           toast.error("Stream error", {
             description: e instanceof Error ? e.message : "Unknown error",
           });
+          result = "error";
         }
       } finally {
         setPending(false);
         abortRef.current = null;
       }
 
+      return result;
+
       function applyEvent(ev: ServerEvent) {
         switch (ev.type) {
+          case "meta": {
+            if (ev.quota) setQuota(ev.quota);
+            break;
+          }
           case "agent_start": {
             const id = `live-${ev.role}-${Date.now()}`;
             liveAgentIds[ev.role] = id;
@@ -168,8 +211,6 @@ export function useChatStream({
             break;
           }
           case "file_end": {
-            // Commit the just-completed file to the preview now that we know
-            // it's syntactically whole. Sandpack re-renders once, cleanly.
             if (liveFilePath) {
               committedFiles[liveFilePath] = liveDraftFiles[liveFilePath] ?? "";
               setFiles({ ...committedFiles });
@@ -185,16 +226,17 @@ export function useChatStream({
           }
           case "error": {
             toast.error("Agent error", { description: ev.message });
+            if (ev.quota) setQuota(ev.quota);
+            result = "error";
             break;
           }
           case "done":
           case "text_delta":
-            // ignore
             break;
         }
       }
     },
-    [projectId, model, pending, files]
+    [projectId, model, pending, files, onRateLimited]
   );
 
   const cancel = React.useCallback(() => {
@@ -211,5 +253,6 @@ export function useChatStream({
     cancel,
     model,
     setModel,
+    quota,
   };
 }

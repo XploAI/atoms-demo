@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, integer } from "drizzle-orm/pg-core";
 
 /** Anonymous identity per browser. The cookie value is this row's id. */
 export const users = pgTable("users", {
@@ -44,8 +44,21 @@ export const shares = pgTable("shares", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+/**
+ * Per-IP usage counter for the free (server-DeepSeek-key) tier.
+ * Every `/api/chat` call using the shared key increments this row.
+ * Users who bring their own Anthropic key bypass this table entirely.
+ */
+export const ipUsage = pgTable("ip_usage", {
+  ip: text("ip").primaryKey(),
+  count: integer("count").default(0).notNull(),
+  firstAt: timestamp("first_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 export type Message = typeof messages.$inferSelect;
 export type NewMessage = typeof messages.$inferInsert;
 export type Share = typeof shares.$inferSelect;
+export type IpUsage = typeof ipUsage.$inferSelect;
